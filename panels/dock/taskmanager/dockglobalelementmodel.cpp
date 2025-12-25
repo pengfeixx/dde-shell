@@ -14,6 +14,7 @@
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QProcess>
+#include <QTimer>
 
 Q_LOGGING_CATEGORY(dockGlobalElementModelLog, "org.deepin.dde.shell.dock.taskmanager.dockglobalelementmodel")
 
@@ -41,9 +42,23 @@ DockGlobalElementModel::DockGlobalElementModel(QAbstractItemModel *appsModel, Do
                 });
                 if (it != m_data.end()) {
                     auto pos = it - m_data.begin();
-                    beginRemoveRows(QModelIndex(), pos, pos);
-                    m_data.remove(pos);
-                    endRemoveRows();
+                    auto removedId = std::get<0>(*it);
+                    
+                    auto tupleToFind = std::make_tuple(QString("desktop"), removedId);
+                    bool isDocked = m_dockedElements.contains(tupleToFind);
+                    if (isDocked) {
+                        // 将 model 指针设为 nullptr，标记为"等待确认"状态
+                        *it = std::make_tuple(removedId, nullptr, -1);
+                        auto pIndex = this->index(pos, 0);
+                        Q_EMIT dataChanged(pIndex, pIndex, {TaskManager::IconNameRole, TaskManager::NameRole});
+                        m_pendingRemovalApps.insert(removedId);
+                        QTimer::singleShot(1000, this, &DockGlobalElementModel::handlePendingRemovals);
+                        continue;
+                    } else {
+                        beginRemoveRows(QModelIndex(), pos, pos);
+                        m_data.remove(pos);
+                        endRemoveRows();
+                    }
                 }
             }
             std::for_each(m_data.begin(), m_data.end(), [this, first, last](auto &data) {
@@ -51,6 +66,36 @@ DockGlobalElementModel::DockGlobalElementModel(QAbstractItemModel *appsModel, Do
                     data = std::make_tuple(std::get<0>(data), std::get<1>(data), std::get<2>(data) - ((last - first) + 1));
                 }
             });
+        },
+        Qt::QueuedConnection);
+
+    connect(
+        m_appsModel,
+        &QAbstractItemModel::rowsInserted,
+        this,
+        [this](const QModelIndex &parent, int first, int last) {
+            Q_UNUSED(parent)
+            for (int i = first; i <= last; ++i) {
+                auto index = m_appsModel->index(i, 0);
+                auto desktopId = index.data(TaskManager::DesktopIdRole).toString();
+                if (desktopId.isEmpty())
+                    continue;
+
+                // 查找是否有等待恢复的 docked 项（model 为 nullptr）
+                auto it = std::find_if(m_data.begin(), m_data.end(), [&desktopId](const auto &data) {
+                    return std::get<0>(data) == desktopId && std::get<1>(data) == nullptr;
+                });
+
+                if (it != m_data.end()) {
+                    auto pos = it - m_data.begin();
+                    *it = std::make_tuple(desktopId, m_appsModel, i);
+                    auto pIndex = this->index(pos, 0);
+                    Q_EMIT dataChanged(pIndex, pIndex);
+                    
+                    // 从待确认移除列表中移除（说明是升级场景，不是卸载）
+                    m_pendingRemovalApps.remove(desktopId);
+                }
+            }
         },
         Qt::QueuedConnection);
 
@@ -258,8 +303,9 @@ void DockGlobalElementModel::loadDockedElements()
         if (type == "desktop") {
             model = m_appsModel;
             auto res = m_appsModel->match(m_appsModel->index(0, 0), TaskManager::DesktopIdRole, id, 1, Qt::MatchExactly).value(0);
-            if (!res.isValid())
+            if (!res.isValid()) {
                 continue;
+            }
             row = res.row();
         }
 
@@ -475,5 +521,33 @@ void DockGlobalElementModel::requestUpdateWindowIconGeometry(const QModelIndex &
 void DockGlobalElementModel::requestWindowsView(const QModelIndexList &indexes) const
 {
     Q_UNUSED(indexes)
+}
+
+void DockGlobalElementModel::handlePendingRemovals()
+{
+    if (m_pendingRemovalApps.isEmpty()) {
+        return;
+    }
+
+    auto pendingApps = m_pendingRemovalApps;
+    for (const auto &appId : pendingApps) {
+        auto res = m_appsModel->match(m_appsModel->index(0, 0), TaskManager::DesktopIdRole, appId, 1, Qt::MatchExactly);
+        
+        if (res.isEmpty()) {
+            auto it = std::find_if(m_data.begin(), m_data.end(), [&appId](const auto &data) {
+                return std::get<0>(data) == appId && std::get<1>(data) == nullptr;
+            });
+            
+            if (it != m_data.end()) {
+                auto pos = it - m_data.begin();
+                beginRemoveRows(QModelIndex(), pos, pos);
+                m_data.remove(pos);
+                endRemoveRows();
+            }
+            
+            TaskManagerSettings::instance()->removeDockedElement(QStringLiteral("desktop/%1").arg(appId));
+        }
+        m_pendingRemovalApps.remove(appId);
+    }
 }
 }

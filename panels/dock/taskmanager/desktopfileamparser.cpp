@@ -31,7 +31,6 @@ static int pidfd_open(pid_t pid, uint flags)
 namespace dock {
 static QDBusServiceWatcher dbusWatcher(AM_DBUS_PATH, QDBusConnection::sessionBus(),
                                                 QDBusServiceWatcher::WatchForOwnerChange);
-static ObjectManager desktopobjectManager(AM_DBUS_PATH, "/org/desktopspec/ApplicationManager1", QDBusConnection::sessionBus());
 
 
 DesktopFileAMParser::DesktopFileAMParser(QString id, QObject* parent)
@@ -39,14 +38,6 @@ DesktopFileAMParser::DesktopFileAMParser(QString id, QObject* parent)
 {
     if (!m_amIsAvaliable) m_amIsAvaliable = QDBusConnection::sessionBus().
         interface()->isServiceRegistered(AM_DBUS_PATH);
-
-    connect(&desktopobjectManager, &ObjectManager::InterfacesRemoved, this, [this] (const QDBusObjectPath& path, const QStringList& interfaces) {
-        Q_UNUSED(interfaces)
-        if (m_applicationInterface->path() == path.path()) {
-            getAppItem()->setDocked(false);
-            return;
-        }
-    });
 
     connect(&dbusWatcher, &QDBusServiceWatcher::serviceRegistered, this, [this](){
         m_amIsAvaliable = true;

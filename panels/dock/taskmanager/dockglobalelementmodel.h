@@ -7,6 +7,7 @@
 #include "dockcombinemodel.h"
 #include <QAbstractProxyModel>
 #include <QPointer>
+#include <QSet>
 #include <tuple>
 
 namespace dock
@@ -42,6 +43,7 @@ public slots:
 private:
     void loadDockedElements();
     QString getMenus(const QModelIndex &index) const;
+    void handlePendingRemovals();
 
 private:
     // id, model, and pos
@@ -51,5 +53,6 @@ private:
     QList<std::tuple<QString, QString>> m_dockedElements;
     QAbstractItemModel *m_appsModel;
     DockCombineModel *m_activeAppModel;
+    QSet<QString> m_pendingRemovalApps;
 };
 }
